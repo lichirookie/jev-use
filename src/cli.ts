@@ -31,6 +31,7 @@ import {
   check,
   ESTIMATED_CONFIDENCE_THRESHOLD,
   REPORTED_CONFIDENCE_THRESHOLD,
+  type GateResult,
   type JudgeRequest,
 } from "./protocol.js";
 import { createServer, SERVER_VERSION } from "./server.js";
@@ -40,6 +41,7 @@ interface Args {
   backend?: string;
   threshold?: number;
   json?: string;
+  codex?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -48,12 +50,69 @@ function parseArgs(argv: string[]): Args {
     const argument = argv[i];
     if (argument === "--backend") args.backend = argv[++i];
     else if (argument === "--threshold") args.threshold = Number(argv[++i]);
+    else if (argument === "--codex") args.codex = true;
     else if (argument === "--help" || argument === "-h") args.command = ["help"];
     else if (argument === "--version" || argument === "-v") args.command = ["version"];
     else if (argument.startsWith("{")) args.json = argument;
     else args.command.push(argument);
   }
   return args;
+}
+
+type HookHarness = "claude" | "codex";
+type HookOutput = {
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse";
+    permissionDecision: "ask" | "deny";
+    permissionDecisionReason: string;
+  };
+};
+
+/** Map a typed Jev gate result to the permission vocabulary a harness supports. */
+export function hookDecisionOutput(
+  result: Pick<GateResult, "decision" | "confidence" | "reason">,
+  harness: HookHarness = "claude",
+): HookOutput | undefined {
+  if (result.decision === "allow") return undefined;
+
+  if (result.decision === "deny") {
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: `Jev gate: denied (confidence ${result.confidence.toFixed(2)}).`,
+      },
+    };
+  }
+
+  const reason = result.reason ?? "unsure";
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: harness === "codex" ? "deny" : "ask",
+      permissionDecisionReason:
+        harness === "codex"
+          ? `Jev gate: could not decide safely (${reason}). Codex must review the action or ask the user before retrying.`
+          : `Jev gate: not sure this is safe (${reason}) — please review.`,
+    },
+  };
+}
+
+/** Codex has no `ask` decision, so adapter failures become an explicit handoff. */
+export function hookFailureOutput(
+  message: string,
+  harness: HookHarness = "claude",
+): HookOutput | undefined {
+  if (harness !== "codex") return undefined;
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason:
+        `Jev gate failed before it could decide (${message}). ` +
+        "Codex must review the action or ask the user before retrying.",
+    },
+  };
 }
 
 /**
@@ -142,27 +201,27 @@ function thresholdLine(override?: number): string {
 }
 
 /**
- * PreToolUse hook adapter, shared by Claude Code and Codex (their hook
- * protocols are shape-compatible). Reads the hook event on stdin, asks
- * jev_gate, and emits a permission decision:
+ * PreToolUse hook adapter, shared by Claude Code and Codex. Reads the hook
+ * event on stdin, asks jev_gate, and emits a permission decision:
  *
  *   deny      → permissionDecision "deny"
- *   escalate  → permissionDecision "ask"   (a human or the LLM decides)
+ *   escalate  → Claude: "ask"; Codex: "deny" with a handoff reason
  *   allow     → NO output: fall through to the user's normal permission
  *               flow. The gate only ever tightens, never loosens.
  *
- * A failure BEFORE the call is fail-open (exit 0, no output): no credentials,
- * or stdin that was not a hook event. A failure of the provider itself is not
- * — the engine turns an unreachable backend into an escalate verdict, so a
- * 503, a refused connection or a timeout surfaces as `ask` with the reason
- * `unreachable`. A command nobody could judge is never waved through.
+ * Existing Claude behavior stays fail-open for adapter failures. `--codex`
+ * instead emits a blocking handoff because Codex does not support `ask`;
+ * malformed stdin exits 2. Provider failures already become an escalate
+ * verdict in the engine and follow the same harness-specific mapping.
  */
 async function hookGate(args: Args): Promise<void> {
+  const harness: HookHarness = args.codex ? "codex" : "claude";
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(await readStdin()) as Record<string, unknown>;
   } catch {
     process.stderr.write("jev-use hook: stdin was not hook-event JSON\n");
+    if (harness === "codex") process.exitCode = 2;
     return;
   }
   try {
@@ -177,24 +236,13 @@ async function hookGate(args: Args): Promise<void> {
       { confidenceThreshold: args.threshold ?? envNumber("JEV_GATE_THRESHOLD") },
     );
 
-    if (result.decision === "allow") return; // stay silent: default flow decides
-
-    const decision = result.decision === "deny" ? "deny" : "ask";
-    const reason =
-      result.decision === "deny"
-        ? `Jev gate: denied (confidence ${result.confidence.toFixed(2)}).`
-        : `Jev gate: not sure this is safe (${result.reason ?? "unsure"}) — please review.`;
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: decision,
-          permissionDecisionReason: reason,
-        },
-      }) + "\n",
-    );
+    const output = hookDecisionOutput(result, harness);
+    if (output) process.stdout.write(JSON.stringify(output) + "\n");
   } catch (error) {
-    process.stderr.write(`jev-use hook: fail-open (${String(error)})\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    const output = hookFailureOutput(message, harness);
+    if (output) process.stdout.write(JSON.stringify(output) + "\n");
+    else process.stderr.write(`jev-use hook: fail-open (${String(error)})\n`);
   }
 }
 
@@ -308,7 +356,8 @@ export const HELP = `jev-use ${SERVER_VERSION} — the typed handoff between you
 usage:
   jev-use install [claude|codex|pi]      wire the MCP server into your harness (all found, if no target)
   jev-use serve [--backend name]         stdio MCP server
-  jev-use hook gate [--threshold N]      PreToolUse hook adapter (Claude Code / Codex)
+  jev-use hook gate [--threshold N] [--codex]
+                                        PreToolUse hook adapter (Claude Code / Codex)
   jev-use judge ['{...}']                one-shot JudgeRequest from argv or stdin
   jev-use doctor                         backend + one live round trip + permission rules
 
@@ -316,7 +365,9 @@ backends: typesafe (TYPESAFE_API_KEY) | openrouter (OPENROUTER_API_KEY)
         | vercel (AI_GATEWAY_API_KEY) | mock. Auto-detected from env,
         or forced with --backend / JEV_BACKEND. Model override: JEV_MODEL.
 
-hook gate also reads two env vars: JEV_GATE_THRESHOLD, the confidence to
+hook gate uses Claude-compatible ask by default. Pass --codex to map an
+escalation or adapter failure to a blocking handoff that Codex supports.
+It also reads two env vars: JEV_GATE_THRESHOLD, the confidence to
 escalate below — unset, each answer's confidence source decides, and
 jev-use doctor prints both numbers in effect — and JEV_GATE_STATE, facts the
 hook event cannot carry, appended to every judged state.
