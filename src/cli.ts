@@ -2,6 +2,7 @@
 /**
  * jev-use CLI.
  *
+ *   jev-use install codex     configure Codex MCP, automatic Gate, and routing
  *   jev-use serve             stdio MCP server (Claude Code, Codex, Cursor, ...)
  *   jev-use hook gate         PreToolUse hook adapter (Claude Code & Codex hooks)
  *   jev-use judge [json]      one-shot judgment from argv or stdin (smoke/CI)
@@ -20,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createBackend, createServerBackend } from "./backends/index.js";
@@ -42,6 +44,7 @@ interface Args {
   threshold?: number;
   json?: string;
   codex?: boolean;
+  yes?: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -51,6 +54,7 @@ function parseArgs(argv: string[]): Args {
     if (argument === "--backend") args.backend = argv[++i];
     else if (argument === "--threshold") args.threshold = Number(argv[++i]);
     else if (argument === "--codex") args.codex = true;
+    else if (argument === "--yes" || argument === "-y") args.yes = true;
     else if (argument === "--help" || argument === "-h") args.command = ["help"];
     else if (argument === "--version" || argument === "-v") args.command = ["version"];
     else if (argument.startsWith("{")) args.json = argument;
@@ -354,7 +358,7 @@ async function doctor(args: Args): Promise<void> {
 export const HELP = `jev-use ${SERVER_VERSION} — the typed handoff between your LLM and Jev
 
 usage:
-  jev-use install [claude|codex|pi]      wire the MCP server into your harness (all found, if no target)
+  jev-use install [claude|codex|pi] [-y] configure the harness; Codex gets MCP + Gate + routing
   jev-use serve [--backend name]         stdio MCP server
   jev-use hook gate [--threshold N] [--codex]
                                         PreToolUse hook adapter (Claude Code / Codex)
@@ -373,6 +377,25 @@ jev-use doctor prints both numbers in effect — and JEV_GATE_STATE, facts the
 hook event cannot carry, appended to every judged state.
 `;
 
+async function confirmCodexInstall(): Promise<boolean> {
+  process.stderr.write(
+    "jev-use will configure the Codex MCP server, install a PreToolUse Gate, " +
+      "and add a managed routing block to ~/.codex/AGENTS.md.\n" +
+      "Existing files are merged and changed files receive a .jev-use.bak backup.\n",
+  );
+  if (!process.stdin.isTTY || !process.stderr.isTTY) {
+    process.stderr.write("codex install needs confirmation; rerun with --yes for non-interactive use.\n");
+    return false;
+  }
+  const prompt = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = (await prompt.question("Continue? [y/N] ")).trim().toLowerCase();
+    return answer === "y" || answer === "yes";
+  } finally {
+    prompt.close();
+  }
+}
+
 function envNumber(name: string): number | undefined {
   const value = process.env[name];
   if (value === undefined) return undefined;
@@ -384,7 +407,17 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const [command, subcommand] = args.command;
   try {
-    if (command === "install") process.exitCode = runInstall(subcommand);
+    if (command === "install") {
+      const includesCodex = subcommand === undefined || subcommand === "codex";
+      if (includesCodex && !args.yes && !(await confirmCodexInstall())) {
+        process.stderr.write("codex installation cancelled.\n");
+        return;
+      }
+      process.exitCode = runInstall(subcommand, {
+        nodePath: process.execPath,
+        cliPath: fileURLToPath(import.meta.url),
+      });
+    }
     else if (command === "serve") await serve(args);
     else if (command === "hook" && subcommand === "gate") await hookGate(args);
     else if (command === "judge") await judgeOnce(args);

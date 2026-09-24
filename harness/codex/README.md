@@ -1,10 +1,30 @@
 # OpenAI Codex CLI
 
-## MCP tools
+## One-command setup
 
 ```bash
-npx -y jev-use install codex    # runs `codex mcp add` for you, pinned
+jev-use install codex
 ```
+
+The installer shows the three changes it will make and asks for confirmation:
+
+1. register the running `jev-use` build as the `jev` MCP server;
+2. merge an automatic `PreToolUse` Gate into `~/.codex/hooks.json`;
+3. add one managed Jev routing block to `~/.codex/AGENTS.md`.
+
+Existing files are preserved and changed files receive a `.jev-use.bak`
+backup. Re-running the command updates the same managed entries without
+duplicating them. Use `--yes` for a reviewed non-interactive installation.
+
+Set one backend credential in the environment Codex will inherit before it is
+restarted, for example `TYPESAFE_API_KEY` with `JEV_BACKEND=typesafe`. The
+installer never writes a credential into Codex configuration.
+
+After installation, restart Codex and open `/hooks`. Codex requires the user to
+review and trust the exact non-managed hook hash before it can run. The
+installer deliberately does not bypass that independent trust boundary.
+
+## Manual MCP setup
 
 Equivalent by hand:
 
@@ -27,7 +47,7 @@ Since Codex has no plugin skill mechanism, paste the routing table from
 [`skills/jev-use/SKILL.md`](../../skills/jev-use/SKILL.md) into your
 `AGENTS.md` so the model knows when to pass the baton.
 
-## Optional: PreToolUse gate hook
+## Manual PreToolUse gate setup
 
 Codex accepts the same hook envelope as Claude Code, but it does not support
 Claude's `ask` permission decision. Use the Codex adapter mode in
