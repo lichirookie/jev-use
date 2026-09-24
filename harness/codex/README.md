@@ -20,8 +20,9 @@ Set one backend credential in the environment Codex will inherit before it is
 restarted, for example `TYPESAFE_API_KEY` with `JEV_BACKEND=typesafe`. The
 installer never writes a credential into Codex configuration.
 
-After installation, restart Codex and open `/hooks`. Codex requires the user to
-review and trust the exact non-managed hook hash before it can run. The
+After installation, start the Codex CLI and open `/hooks` there. Review and
+trust the exact non-managed hook hash, exit the CLI, and restart the desktop
+app. `/hooks` is a CLI interaction, not a desktop-chat slash command. The
 installer deliberately does not bypass that independent trust boundary.
 
 ## Manual MCP setup

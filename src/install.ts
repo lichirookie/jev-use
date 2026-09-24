@@ -300,7 +300,8 @@ export function runInstall(
     );
     if (plan.some((step) => step.harness === "codex")) {
       process.stderr.write(
-        "codex next: restart Codex, open /hooks, review and trust the Jev PreToolUse hook, then run `jev-use doctor`.\n",
+        "codex next: start the Codex CLI, open /hooks there, and trust the Jev PreToolUse hook; " +
+          "then restart the desktop app and run `jev-use doctor`.\n",
       );
     }
   }
