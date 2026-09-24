@@ -72,6 +72,17 @@ type HookOutput = {
   };
 };
 
+/** The two read-only judgment tools exposed by jev-use's own MCP server. */
+const MCP_ALLOW_RULES = ["mcp__jev__jev_judge", "mcp__jev__jev_gate"];
+
+/** Prevent Codex's wildcard PreToolUse hook from gating Jev with Jev again. */
+export function shouldBypassHookGate(
+  event: Record<string, unknown>,
+  harness: HookHarness = "claude",
+): boolean {
+  return harness === "codex" && MCP_ALLOW_RULES.includes(String(event.tool_name ?? ""));
+}
+
 /** Map a typed Jev gate result to the permission vocabulary a harness supports. */
 export function hookDecisionOutput(
   result: Pick<GateResult, "decision" | "confidence" | "reason">,
@@ -228,6 +239,8 @@ async function hookGate(args: Args): Promise<void> {
     if (harness === "codex") process.exitCode = 2;
     return;
   }
+  if (shouldBypassHookGate(event, harness)) return;
+
   try {
     const { jev } = connect(args);
     const toolInput = event.tool_input ?? {};
@@ -265,9 +278,6 @@ async function judgeOnce(args: Args): Promise<void> {
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
   process.exitCode = result.escalated ? 3 : 0;
 }
-
-/** The allow rules a harness needs before it may call jev's MCP tools. */
-const MCP_ALLOW_RULES = ["mcp__jev__jev_judge", "mcp__jev__jev_gate"];
 
 /** The settings files a user would put those rules in: their own, then this project's. */
 function claudeSettingsFiles(): string[] {

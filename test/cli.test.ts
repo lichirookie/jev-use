@@ -13,6 +13,7 @@ import {
   HELP,
   hookDecisionOutput,
   hookFailureOutput,
+  shouldBypassHookGate,
 } from "../src/cli.js";
 import { judge } from "../src/judge.js";
 import {
@@ -77,6 +78,14 @@ describe("gateState", () => {
 });
 
 describe("Codex hook decisions", () => {
+  it("bypasses the automatic gate for Jev's own MCP tools only", () => {
+    expect(shouldBypassHookGate({ tool_name: "mcp__jev__jev_judge" }, "codex")).toBe(true);
+    expect(shouldBypassHookGate({ tool_name: "mcp__jev__jev_gate" }, "codex")).toBe(true);
+    expect(shouldBypassHookGate({ tool_name: "mcp__filesystem__read_file" }, "codex")).toBe(false);
+    expect(shouldBypassHookGate({ tool_name: "mcp__jev__future_tool" }, "codex")).toBe(false);
+    expect(shouldBypassHookGate({ tool_name: "mcp__jev__jev_judge" }, "claude")).toBe(false);
+  });
+
   it("keeps an explicit allow silent so Codex's normal permission flow decides", () => {
     expect(
       hookDecisionOutput(

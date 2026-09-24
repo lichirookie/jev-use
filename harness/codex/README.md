@@ -83,6 +83,11 @@ blocks that attempt with a reason telling Codex to review the action itself or
 ask the user before retrying. This is the Codex fallback: uncertainty returns
 control to the main agent without treating a Jev outage as permission.
 
+The wildcard Hook silently skips `mcp__jev__jev_judge` and
+`mcp__jev__jev_gate` themselves. This prevents a direct Jev judgment from
+triggering a second Jev Gate call before it can run; every other matched tool
+continues through the normal Gate path.
+
 The adapter reads the same two env vars here — `JEV_GATE_THRESHOLD` and
 `JEV_GATE_STATE` (facts the hook event cannot carry, appended to every judged
 state) — exported in the environment Codex runs in. See
